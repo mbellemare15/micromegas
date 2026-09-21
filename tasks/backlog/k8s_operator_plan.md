@@ -1,12 +1,11 @@
-# Kubernetes Operator for Screens and Folders — Design
+# Kubernetes Operator for Screens — Design
 
 ## Overview
 
-A Kubernetes operator, `micromegas-operator`, that reconciles `Screen` and `Folder` custom
-resources into screens and folders on a Micromegas analytics web server, the way grafana-operator
-reconciles `GrafanaDashboard` and `GrafanaFolder` into a Grafana. A third custom resource,
-`MicromegasInstance`, names a target server and its credentials; `Screen` and `Folder` pick their
-instance(s) with a label selector.
+A Kubernetes operator, `micromegas-operator`, that reconciles `Screen` custom resources into
+screens on a Micromegas analytics web server, the way grafana-operator reconciles
+`GrafanaDashboard` into a Grafana. A second custom resource, `MicromegasInstance`, names a target
+server and its credentials; `Screen` picks its instance(s) with a label selector.
 
 The goal is GitOps for dashboards: a service's Helm chart ships its notebook screens next to its
 Deployment, ArgoCD applies them, and the operator keeps the server in sync. Screens edited by hand
@@ -26,11 +25,11 @@ creatable type (`screen_types.rs`); the four other types are deprecated. `name` 
 also the URL. It is validated by `validate_name` (`models.rs:276`): 3–100 chars, `[a-z0-9-]`,
 starts with a letter, no consecutive hyphens, `new` reserved.
 
-**Folders are partially implicit** (`rust/analytics-web-srv/src/folders.rs:1-4`). A folder exists
-if it has a row in `folders` or is a prefix of some screen's `folder_path`. `POST /api/folders` is
-idempotent; `DELETE /api/folders?path=` refuses non-empty folders with `FOLDER_NOT_EMPTY`;
-`PUT /api/folders` renames a folder and rewrites every descendant screen's path, including screens
-nobody in Kubernetes owns.
+**Folders are path prefixes, not objects** (`rust/analytics-web-srv/src/folders.rs:1-4`). A folder
+exists if it has a row in `folders` or is a prefix of some screen's `folder_path`. Setting
+`folder_path` on a screen is enough to make its folder appear in the UI, and an implicit folder
+disappears when its last screen leaves. Folders carry no `managed_by` or other attributes. This is
+why there is no `Folder` resource in v1 (see Follow-ups).
 
 **`managed_by` is an existing ownership marker.** The `micromegas-screens` CLI stamps it with the git
 remote URL on every create/update and only deletes server screens whose `managed_by` equals its
@@ -41,12 +40,12 @@ changed but not cleared.
 **REST API** under `{MICROMEGAS_BASE_PATH}/api` (`web_server.rs:396-445`):
 `GET/POST /screens`, `GET/PUT/DELETE /screens/{name}`, `GET /screen-types`,
 `GET/POST/PUT/DELETE /folders`. Errors are `{code, message}`. There is no FlightSQL path for
-screens or folders.
+screens.
 
 **Auth.** The web server accepts only OIDC bearer JWTs (`auth/handlers.rs`); there is no API-key path
 in this crate. The Python `OidcClientCredentialsProvider` (`auth/oidc.py:584`) performs the
 client-credentials grant and sends the returned `access_token` as the bearer; the server validates
-it against the issuers listed in `MICROMEGAS_OIDC_CONFIG`. Screen and folder handlers require only
+it against the issuers listed in `MICROMEGAS_OIDC_CONFIG`. Screen handlers require only
 an authenticated principal — there is no per-screen authorization and no admin check.
 
 **Nothing exists on the Kubernetes side.** No Helm chart, no manifests. Dockerfiles live in
@@ -59,7 +58,7 @@ an authenticated principal — there is no per-screen authorization and no admin
 | Language | Rust, kube-rs | Matches the repo; shares types and validators with the server |
 | Instance targeting | `MicromegasInstance` CR + `instanceSelector` | grafana-operator model; several servers per cluster; per-space separation |
 | Auth (v1) | OIDC client credentials from a Secret | Works today with no server change; mirrors the Python machine client |
-| Scope (v1) | `Screen` + `Folder` | One API, one credential type; view sets and data sources are follow-ups |
+| Scope (v1) | `Screen` only | One API, one credential type; folders are implicit path prefixes; view sets and data sources are follow-ups |
 | Config carrier | Inline object **or** ConfigMap key reference | Inline is Helm-templatable and diffable; ConfigMap suits `.Files.Get` workflows |
 | Reconcile model | Per-resource controllers, `managed_by` ownership, finalizers | Fine-grained status; conflicts reported, not overwritten; orphan sweep is a follow-up |
 
@@ -69,12 +68,12 @@ an authenticated principal — there is no per-screen authorization and no admin
 rust/analytics-web-api/           # NEW lib crate: shared DTOs + validators (see §Shared crate)
 rust/analytics-web-srv/           # depends on analytics-web-api instead of local definitions
 rust/micromegas-operator/         # NEW bin crate
-  src/main.rs                     # clap flags, tracing init, spawns the three controllers
+  src/main.rs                     # clap flags, tracing init, spawns the two controllers
   src/bin/crdgen.rs               # prints CRD YAML for charts/micromegas-operator/crds/
-  src/crds/{instance,screen,folder}.rs   # CustomResource structs + status types
+  src/crds/{instance,screen}.rs   # CustomResource structs + status types
   src/client.rs                   # WebApiClient over reqwest, typed by analytics-web-api
   src/auth.rs                     # OIDC client-credentials token cache
-  src/reconcile/{instance,screen,folder}.rs
+  src/reconcile/{instance,screen}.rs
   src/plan.rs                     # pure desired-vs-actual diff (unit tested)
   src/conditions.rs               # Ready condition helpers
 charts/micromegas-operator/       # NEW Helm chart (CRDs, Deployment, RBAC, SA)
@@ -90,8 +89,9 @@ Extracted from `analytics-web-srv`, no behavior change:
 
 - `ScreenType` enum and its serde names.
 - `CreateScreenRequest`, `UpdateScreenRequest`, `ScreenResponse` (the wire shape of a screen),
-  `CreateFolderRequest`, `UpdateFolderRequest`, `FolderInfo`, `ErrorResponse { code, message }`.
-- `validate_name`, `normalize_name`, `validate_folder_path`, `ValidationError`.
+  `ErrorResponse { code, message }`.
+- `validate_name`, `normalize_name`, `validate_folder_path`, `ValidationError`
+  (`validate_folder_path` is needed for `spec.folderPath`).
 
 `analytics-web-srv` re-exports or imports these; handlers and `app_db::models` keep their DB row
 types locally. The operator depends on this crate and never on `analytics-web-srv`. Record the
@@ -99,7 +99,7 @@ move in `CHANGELOG.md` under the Rust-API "Minor breaking change" clause.
 
 ## Custom Resources
 
-API group `micromegas.info`, version `v1alpha1`. All three kinds are namespaced. CRDs are generated
+API group `micromegas.info`, version `v1alpha1`. Both kinds are namespaced. CRDs are generated
 with `kube::CustomResourceExt` from the Rust structs (schemars), committed under
 `charts/micromegas-operator/crds/`, and CI fails if `crdgen` output differs from the committed files.
 
@@ -182,30 +182,9 @@ status:
   `InvalidConfig`, `ConfigMapNotFound`, `ApiError`.
 - When the selector matches several instances, `Ready=True` only if every instance synced;
   `status.instances` reports each one.
-
-### Folder
-
-```yaml
-apiVersion: micromegas.info/v1alpha1
-kind: Folder
-metadata:
-  name: velocity-prod
-  namespace: game-system
-spec:
-  instanceSelector:
-    matchLabels: { micromegas.info/env: prod }
-  path: velocity/prod
-status: { observedGeneration, conditions, instances }
-```
-
-- Create is `POST /api/folders`, which is idempotent on the server.
-- Folders have no `managed_by`. The operator therefore never claims ownership of a folder; it only
-  guarantees existence, and on CR deletion attempts `DELETE` and tolerates `FOLDER_NOT_EMPTY`.
-- Changing `spec.path` is treated as create-new then delete-old-if-empty. The operator never calls
-  `PUT /api/folders` (rename), because rename moves every screen underneath, including screens
-  the operator does not own.
-- A `Folder` is optional for a `Screen`: setting `folderPath` on a screen materializes the folder
-  implicitly. `Folder` exists to pre-create empty folders and to remove them when unused.
+- `spec.folderPath` is validated with the shared `validate_folder_path` (`InvalidName`). The
+  operator never calls the folders endpoints: the server materializes the folder from the path,
+  and an implicit folder vanishes when its last screen is deleted.
 
 ## Ownership and Reconcile Semantics
 
@@ -249,13 +228,12 @@ changed to ours (for example by a one-time `micromegas-screens`-style import ste
 
 ## Controller Mechanics
 
-- Three `kube::runtime::Controller`s in one process:
+- Two `kube::runtime::Controller`s in one process:
   - Instance controller: owns `MicromegasInstance`, watches `Secret` (mapped through
     `spec.auth.*.secretRef`).
   - Screen controller: owns `Screen`, watches `MicromegasInstance` (any change re-enqueues every
     Screen whose selector matches) and `ConfigMap` (mapped to Screens whose `configFrom` names it).
-  - Folder controller: owns `Folder`, watches `MicromegasInstance` the same way.
-- `kube::runtime::finalizer` for both Screen and Folder.
+- `kube::runtime::finalizer` on `Screen`.
 - Status via server-side apply on the `status` subresource with a fixed field manager.
 - Error policy: transient errors (network, 5xx, 429) requeue with the runtime's exponential backoff
   and set `Ready=False / ApiError` with the message; 4xx validation errors do not requeue until spec
@@ -274,7 +252,7 @@ changed to ours (for example by a one-time `micromegas-screens`-style import ste
 - `crds/` with the generated CRDs (installed by Helm's CRD mechanism; documented upgrade note that
   Helm does not upgrade CRDs, with a `kubectl apply -f crds/` step).
 - `Deployment`, `ServiceAccount`, `ClusterRole` + `ClusterRoleBinding` (or `Role`s when
-  `watchNamespaces` is set): `get/list/watch/update/patch` on the three CRDs, their `status` and
+  `watchNamespaces` is set): `get/list/watch/update/patch` on the two CRDs, their `status` and
   `finalizers`; `get/list/watch` on `configmaps` and `secrets`; `create/patch` on `events`.
 - Values: `image`, `clusterName` (required), `watchNamespaces` (empty = all), `defaultResyncInterval`,
   `resources`, `telemetry` (ingestion URL and key for self-reporting, optional).
@@ -291,12 +269,11 @@ one `Screen` per dashboard, either inline `config` or a `ConfigMap` built from
 | Instance not Ready | skip, re-enqueue on instance change | `Ready=False / InstanceNotReady` |
 | Secret missing / token error | instance not Ready | instance `SecretNotFound` / `TokenError` |
 | Server 401/403 | instance not Ready, screens `InstanceNotReady` | `Unauthorized` |
-| Screen name invalid | no action | `InvalidName` |
+| Screen name or folder path invalid | no action | `InvalidName` |
 | Server 400 on create/update | no retry until spec change | `InvalidConfig` (server message) |
 | Existing screen not ours | no action | `Conflict` |
 | ConfigMap or key missing | no action, re-enqueue on ConfigMap change | `ConfigMapNotFound` |
 | Network / 5xx | exponential backoff | `ApiError` |
-| Folder delete non-empty | finalizer removed, event emitted | n/a (object is gone) |
 
 ## Testing
 
@@ -310,8 +287,9 @@ one `Screen` per dashboard, either inline `config` or a `ConfigMap` built from
 - **CRD snapshot**: `crdgen` output committed; CI diff check.
 - **End-to-end (manual, scripted)**: `local_test_env/ai_scripts/operator_e2e.py` starts the monolith
   with `--disable-auth`, creates a `kind` cluster, installs the chart, applies a sample
-  `MicromegasInstance` (no `auth`), `Folder`, and two `Screen`s (inline and ConfigMap), then checks
-  the server via `GET /api/screens` and `GET /api/folders`; edits a screen through the API and
+  `MicromegasInstance` (no `auth`) and two `Screen`s (inline and ConfigMap) in a nested folder path,
+  then checks the server via `GET /api/screens` and `GET /api/folders` (the folder must appear
+  implicitly); edits a screen through the API and
   verifies it reverts after resync; deletes a `Screen` and verifies removal; pre-creates an unmanaged
   screen and verifies `Conflict`. Not checked in as a `#[ignore]` test, per `CONTRIBUTING.md`.
 
@@ -336,5 +314,9 @@ one `Screen` per dashboard, either inline `config` or a `ConfigMap` built from
 6. **`adopt: true`** on `Screen` to take over an unmanaged screen instead of reporting `Conflict`.
 7. **Leader election** (`kube-lease-manager`) for multi-replica deployments.
 8. **Namespace restriction** on cross-namespace instance selection.
-9. **Server-side audit records** for screen and folder mutations in `mutation_audit.rs`, which today
-   only covers grants and groups.
+9. **Server-side audit records** for screen mutations in `mutation_audit.rs`, which today only
+   covers grants and groups.
+10. **`Folder` CR**, only if folders gain server-side state worth managing (description, default
+    time range, permissions, an owner marker). Today a folder is a path prefix materialized by its
+    screens, so a `Folder` resource would only pre-create empty folders and could not tell its own
+    folders from anyone else's. Adding the CRD later is additive; removing one is not.
