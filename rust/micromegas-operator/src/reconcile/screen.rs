@@ -125,15 +125,66 @@ pub fn aggregate(outcomes: &[InstanceOutcome]) -> (bool, &'static str, String) {
     )
 }
 
-async fn resolve_config(screen: &Screen, ctx: &Context) -> Result<serde_json::Value, Failure> {
+/// Looks up the status the previous reconcile recorded for one instance, so a
+/// fresh sync can carry its config_hash/last_synced_at forward instead of
+/// wiping them (see `sync_success_status` and item 4 in the review).
+pub fn prior_instance_status<'a>(
+    previous: &'a [ScreenInstanceStatus],
+    namespace: &str,
+    name: &str,
+) -> Option<&'a ScreenInstanceStatus> {
+    previous
+        .iter()
+        .find(|s| s.namespace == namespace && s.name == name)
+}
+
+/// Builds the per-instance status after a successful sync. A `NoOp` plan
+/// action must leave config_hash/last_synced_at exactly as they were: writing
+/// a fresh timestamp on every reconcile turns steady state into a self
+/// sustaining loop (status patch -> resourceVersion bump -> watch fires ->
+/// reconcile -> fresh timestamp -> patch again), which also makes
+/// resyncInterval meaningless. Only Create/Update advance them.
+pub fn sync_success_status(
+    mut status: ScreenInstanceStatus,
+    changed: bool,
+    desired: &Desired,
+    now: &str,
+) -> ScreenInstanceStatus {
+    if changed {
+        status.config_hash = Some(plan::config_hash(&desired.config));
+        status.last_synced_at = Some(now.to_string());
+    }
+    status
+}
+
+/// `matching_instances` returns instances in the reflector store's (arbitrary)
+/// hash order; sorting keeps `status.instances` and aggregate's "first
+/// failure" deterministic across reconciles.
+pub fn sorted_by_namespace_name(
+    mut instances: Vec<Arc<MicromegasInstance>>,
+) -> Vec<Arc<MicromegasInstance>> {
+    instances.sort_by(|a, b| {
+        let key_a = (a.namespace().unwrap_or_default(), a.name_any());
+        let key_b = (b.namespace().unwrap_or_default(), b.name_any());
+        key_a.cmp(&key_b)
+    });
+    instances
+}
+
+enum ResolveError {
+    Terminal(Failure),
+    Transient(String),
+}
+
+async fn resolve_config(screen: &Screen, ctx: &Context) -> Result<serde_json::Value, ResolveError> {
     if let Some(config) = &screen.spec.config {
         return Ok(config.clone());
     }
     let Some(from) = &screen.spec.config_from else {
-        return Err(Failure {
+        return Err(ResolveError::Terminal(Failure {
             reason: reasons::INVALID_CONFIG,
             message: "neither config nor configFrom is set".into(),
-        });
+        }));
     };
     let reference = &from.config_map_key_ref;
     let api: Api<ConfigMap> =
@@ -141,23 +192,26 @@ async fn resolve_config(screen: &Screen, ctx: &Context) -> Result<serde_json::Va
     let cm = match api.get(&reference.name).await {
         Ok(cm) => Some(cm),
         Err(kube::Error::Api(e)) if e.code == 404 => None,
-        Err(e) => {
-            return Err(Failure {
-                reason: reasons::API_ERROR,
-                message: e.to_string(),
-            });
-        }
+        // A transient Kubernetes API error reading the ConfigMap is not proof
+        // the reference is wrong; treat it as retryable rather than failing
+        // the Screen outright.
+        Err(e) => return Err(ResolveError::Transient(e.to_string())),
     };
     config_from_configmap(cm.as_ref(), &reference.name, &reference.key)
+        .map_err(ResolveError::Terminal)
 }
 
-fn instance_status(instance: &MicromegasInstance, screen_name: &str) -> ScreenInstanceStatus {
+fn instance_status(
+    instance: &MicromegasInstance,
+    screen_name: &str,
+    prior: Option<&ScreenInstanceStatus>,
+) -> ScreenInstanceStatus {
     ScreenInstanceStatus {
         name: instance.name_any(),
         namespace: instance.namespace().unwrap_or_default(),
         screen_name: screen_name.to_string(),
-        config_hash: None,
-        last_synced_at: None,
+        config_hash: prior.and_then(|p| p.config_hash.clone()),
+        last_synced_at: prior.and_then(|p| p.last_synced_at.clone()),
         error: None,
     }
 }
@@ -166,9 +220,10 @@ async fn sync_one(
     screen: &Screen,
     desired: &Desired,
     instance: &MicromegasInstance,
+    prior: Option<&ScreenInstanceStatus>,
     ctx: &Context,
 ) -> InstanceOutcome {
-    let mut status = instance_status(instance, &desired.name);
+    let status = instance_status(instance, &desired.name, prior);
     let fail = |mut status: ScreenInstanceStatus,
                 reason: &'static str,
                 message: String,
@@ -211,7 +266,8 @@ async fn sync_one(
     };
     match result {
         Ok(verb) => {
-            if verb != "InSync" {
+            let changed = verb != "InSync";
+            if changed {
                 publish(
                     ctx,
                     screen,
@@ -225,21 +281,23 @@ async fn sync_one(
                 )
                 .await;
             }
-            status.config_hash = Some(plan::config_hash(&desired.config));
-            status.last_synced_at = Some(chrono::Utc::now().to_rfc3339());
-            InstanceOutcome::Synced { status }
+            let now = chrono::Utc::now().to_rfc3339();
+            InstanceOutcome::Synced {
+                status: sync_success_status(status, changed, desired, &now),
+            }
         }
-        Err(ApiError::BadRequest(e)) => fail(
-            status,
-            reasons::INVALID_CONFIG,
-            format!("{}: {}", e.code, e.message),
-            false,
-        ),
+        Err(e @ ApiError::BadRequest(_)) => {
+            fail(status, reasons::INVALID_CONFIG, e.to_string(), false)
+        }
+        // Unauthorized covers both 401 and 403 (see client::classify); it means the
+        // credentials or grants are wrong, not that the server is momentarily
+        // unavailable, so it must not be treated as transient.
         Err(ApiError::Unauthorized) => fail(
             status,
-            reasons::INSTANCE_NOT_READY,
-            "unauthorized".into(),
-            true,
+            reasons::API_ERROR,
+            "server rejected the request as unauthorized (401/403); check the instance credentials"
+                .into(),
+            false,
         ),
         Err(e) => fail(status, reasons::API_ERROR, e.to_string(), e.is_transient()),
     }
@@ -254,7 +312,7 @@ async fn publish(ctx: &Context, screen: &Screen, type_: EventType, action: &str,
         secondary: None,
     };
     if let Err(e) = ctx.recorder.publish(&event, &screen.object_ref(&())).await {
-        debug!("event publish failed: {e}");
+        warn!("event publish failed: {e}");
     }
 }
 
@@ -292,9 +350,13 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
     };
     let config = match resolve_config(&screen, &ctx).await {
         Ok(c) => c,
-        Err(f) => {
+        Err(ResolveError::Terminal(f)) => {
             write_status(&api, &screen, false, f.reason, &f.message, vec![]).await?;
             return Ok(Action::await_change());
+        }
+        Err(ResolveError::Transient(message)) => {
+            write_status(&api, &screen, false, reasons::API_ERROR, &message, vec![]).await?;
+            return Ok(Action::requeue(ctx.backoff.next(&key)));
         }
     };
     let desired = Desired {
@@ -305,15 +367,25 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
         managed_by: identity.managed_by,
     };
 
-    let instances = matching_instances(&screen.spec.instance_selector, ctx.instances.state())
-        .map_err(Error::Transient)?;
+    let instances = sorted_by_namespace_name(
+        matching_instances(&screen.spec.instance_selector, ctx.instances.state())
+            .map_err(Error::Transient)?,
+    );
+    let previous = screen
+        .status
+        .as_ref()
+        .map(|s| s.instances.as_slice())
+        .unwrap_or(&[]);
     let mut outcomes = Vec::with_capacity(instances.len());
     let mut requeue = DEFAULT_REQUEUE;
     for instance in &instances {
         if let Ok(interval) = resync_interval(&instance.spec) {
             requeue = requeue.min(interval);
         }
-        outcomes.push(sync_one(&screen, &desired, instance, &ctx).await);
+        let inst_namespace = instance.namespace().unwrap_or_default();
+        let inst_name = instance.name_any();
+        let prior = prior_instance_status(previous, &inst_namespace, &inst_name);
+        outcomes.push(sync_one(&screen, &desired, instance, prior, &ctx).await);
     }
 
     let (ok, reason, message) = aggregate(&outcomes);
@@ -352,8 +424,10 @@ async fn cleanup(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error
         // Nothing valid could ever have been written under an invalid identity.
         Err(_) => return Ok(Action::await_change()),
     };
-    let instances = matching_instances(&screen.spec.instance_selector, ctx.instances.state())
-        .map_err(Error::Transient)?;
+    let instances = sorted_by_namespace_name(
+        matching_instances(&screen.spec.instance_selector, ctx.instances.state())
+            .map_err(Error::Transient)?,
+    );
     for instance in instances {
         let client = build_client(&instance, &ctx)
             .await
@@ -397,8 +471,8 @@ pub async fn reconcile(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action,
     let ctx2 = ctx.clone();
     finalizer(&api, FINALIZER, screen, |event| async move {
         match event {
-            FinalizerEvent::Apply(s) => apply(s, ctx2.clone()).await,
-            FinalizerEvent::Cleanup(s) => cleanup(s, ctx2.clone()).await,
+            FinalizerEvent::Apply(s) => apply(s, ctx2).await,
+            FinalizerEvent::Cleanup(s) => cleanup(s, ctx2).await,
         }
     })
     .await

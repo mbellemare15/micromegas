@@ -3,11 +3,16 @@
 use k8s_openapi::api::core::v1::ConfigMap;
 use kube::core::ObjectMeta;
 use micromegas_operator::conditions::reasons;
-use micromegas_operator::crds::{Screen, ScreenInstanceStatus, ScreenSpec};
+use micromegas_operator::crds::{
+    MicromegasInstance, MicromegasInstanceSpec, Screen, ScreenInstanceStatus, ScreenSpec,
+};
+use micromegas_operator::plan::{self, Desired};
 use micromegas_operator::reconcile::screen::{
-    InstanceOutcome, aggregate, config_from_configmap, desired_identity,
+    InstanceOutcome, aggregate, config_from_configmap, desired_identity, prior_instance_status,
+    sorted_by_namespace_name, sync_success_status,
 };
 use serde_json::json;
+use std::sync::Arc;
 
 fn screen(meta_name: &str, spec_name: Option<&str>, folder: &str) -> Screen {
     Screen {
@@ -143,4 +148,112 @@ fn aggregate_empty_is_no_matching_instance() {
     let (ok, reason, _) = aggregate(&[]);
     assert!(!ok);
     assert_eq!(reason, reasons::NO_MATCHING_INSTANCE);
+}
+
+fn instance_status(
+    namespace: &str,
+    name: &str,
+    config_hash: &str,
+    last_synced_at: &str,
+) -> ScreenInstanceStatus {
+    ScreenInstanceStatus {
+        name: name.into(),
+        namespace: namespace.into(),
+        screen_name: "overview".into(),
+        config_hash: Some(config_hash.into()),
+        last_synced_at: Some(last_synced_at.into()),
+        error: None,
+    }
+}
+
+#[test]
+fn prior_instance_status_matches_namespace_and_name() {
+    let previous = [
+        instance_status("m", "a", "sha256:aaa", "2024-01-01T00:00:00Z"),
+        instance_status("m", "b", "sha256:bbb", "2024-01-02T00:00:00Z"),
+    ];
+    let found = prior_instance_status(&previous, "m", "b").expect("present");
+    assert_eq!(found.config_hash.as_deref(), Some("sha256:bbb"));
+    assert!(prior_instance_status(&previous, "m", "missing").is_none());
+    assert!(prior_instance_status(&previous, "other-ns", "a").is_none());
+}
+
+fn desired() -> Desired {
+    Desired {
+        name: "overview".into(),
+        screen_type: "notebook".into(),
+        folder_path: "".into(),
+        config: json!({"cells": []}),
+        managed_by: "k8s://c/ns/overview".into(),
+    }
+}
+
+#[test]
+fn sync_success_status_noop_keeps_prior_hash_and_time() {
+    let prior = instance_status("m", "a", "sha256:old", "2024-01-01T00:00:00Z");
+    let carried = ScreenInstanceStatus {
+        error: None,
+        ..prior.clone()
+    };
+    let result = sync_success_status(carried, false, &desired(), "2024-06-01T00:00:00Z");
+    assert_eq!(result.config_hash, prior.config_hash);
+    assert_eq!(result.last_synced_at, prior.last_synced_at);
+}
+
+#[test]
+fn sync_success_status_change_sets_fresh_hash_and_time() {
+    let prior = instance_status("m", "a", "sha256:old", "2024-01-01T00:00:00Z");
+    let carried = ScreenInstanceStatus {
+        error: None,
+        ..prior.clone()
+    };
+    let result = sync_success_status(carried, true, &desired(), "2024-06-01T00:00:00Z");
+    assert_eq!(
+        result.config_hash,
+        Some(plan::config_hash(&desired().config))
+    );
+    assert_eq!(
+        result.last_synced_at,
+        Some("2024-06-01T00:00:00Z".to_string())
+    );
+    assert_ne!(result.last_synced_at, prior.last_synced_at);
+}
+
+fn instance(namespace: &str, name: &str) -> Arc<MicromegasInstance> {
+    Arc::new(MicromegasInstance {
+        metadata: ObjectMeta {
+            name: Some(name.into()),
+            namespace: Some(namespace.into()),
+            ..Default::default()
+        },
+        spec: MicromegasInstanceSpec {
+            url: "http://x".into(),
+            auth: None,
+            resync_interval: "10m".into(),
+        },
+        status: None,
+    })
+}
+
+#[test]
+fn sorted_by_namespace_name_orders_deterministically() {
+    let instances = vec![instance("z", "a"), instance("a", "b"), instance("a", "a")];
+    let sorted = sorted_by_namespace_name(instances);
+    let keys: Vec<(String, String)> = sorted
+        .iter()
+        .map(|i| {
+            (
+                i.metadata.namespace.clone().unwrap(),
+                i.metadata.name.clone().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            ("a".to_string(), "a".to_string()),
+            ("a".to_string(), "b".to_string()),
+            ("z".to_string(), "a".to_string()),
+        ]
+    );
 }
