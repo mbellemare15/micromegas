@@ -25,18 +25,27 @@ pub const DEFAULT_SCREEN_TYPE: &str = "notebook";
 #[serde(rename_all = "camelCase")]
 #[x_kube(validation = Rule::new("has(self.config) != has(self.configFrom)")
     .message("exactly one of config or configFrom must be set"))]
+// A `self == oldSelf` rule on an optional field is skipped whenever the field is
+// absent on either side, so unset -> set would pass and orphan the screen
+// written under the defaulted name. The presence check has to be spec-level.
+#[x_kube(validation = Rule::new("has(self.name) == has(oldSelf.name)")
+    .message("name cannot be added or removed after creation"))]
 pub struct ScreenSpec {
     /// Selects the MicromegasInstance objects this screen is written to.
     pub instance_selector: LabelSelector,
     /// Server-side screen name. Defaults to metadata.name. Must satisfy the server's slug rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[x_kube(validation = Rule::new("self == oldSelf").message("name is immutable"))]
+    #[x_kube(validation = Rule::new("self.matches('^[a-z][a-z0-9-]{1,98}[a-z0-9]$')")
+        .message("name must be 3-100 lowercase letters, digits, or hyphens, starting with a letter"))]
     pub name: Option<String>,
     #[serde(default = "default_screen_type")]
     #[x_kube(validation = Rule::new("self == oldSelf").message("screenType is immutable"))]
     pub screen_type: String,
     /// Folder path such as "team/prod". Empty means root. The folder is created implicitly.
     #[serde(default)]
+    #[x_kube(validation = Rule::new("self == '' || self.matches('^[a-z0-9-]+(/[a-z0-9-]+)*$')")
+        .message("folderPath segments must be lowercase letters, digits, or hyphens"))]
     pub folder_path: String,
     /// Notebook config, same shape as the REST API's config field.
     #[serde(default, skip_serializing_if = "Option::is_none")]

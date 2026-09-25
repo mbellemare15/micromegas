@@ -55,6 +55,9 @@ spec:
                 default: ''
                 description: Folder path such as "team/prod". Empty means root. The folder is created implicitly.
                 type: string
+                x-kubernetes-validations:
+                - message: folderPath segments must be lowercase letters, digits, or hyphens
+                  rule: self == '' || self.matches('^[a-z0-9-]+(/[a-z0-9-]+)*$')
               instanceSelector:
                 description: Selects the MicromegasInstance objects this screen is written to.
                 properties:
@@ -92,6 +95,8 @@ spec:
                 x-kubernetes-validations:
                 - message: name is immutable
                   rule: self == oldSelf
+                - message: name must be 3-100 lowercase letters, digits, or hyphens, starting with a letter
+                  rule: self.matches('^[a-z][a-z0-9-]{1,98}[a-z0-9]$')
               screenType:
                 default: notebook
                 type: string
@@ -104,6 +109,8 @@ spec:
             x-kubernetes-validations:
             - message: exactly one of config or configFrom must be set
               rule: has(self.config) != has(self.configFrom)
+            - message: name cannot be added or removed after creation
+              rule: has(self.name) == has(oldSelf.name)
           status:
             nullable: true
             properties:

@@ -30,20 +30,48 @@ fn screen_config_preserves_unknown_fields() {
     assert_eq!(config["x-kubernetes-preserve-unknown-fields"], true);
 }
 
+fn rules(node: &serde_json::Value) -> Vec<String> {
+    node["x-kubernetes-validations"]
+        .as_array()
+        .expect("validation rules")
+        .iter()
+        .map(|r| r["rule"].as_str().expect("rule text").to_string())
+        .collect()
+}
+
 #[test]
 fn screen_spec_has_one_of_rule_and_immutability_rules() {
     let schema = schema_of::<Screen>();
     let spec = &schema["properties"]["spec"];
-    let rules = spec["x-kubernetes-validations"].as_array().unwrap();
+    let spec_rules = rules(spec);
+    assert!(spec_rules.iter().any(|r| r.contains("has(self.config)")));
+    // Guards unset -> set on the optional name, which `self == oldSelf` skips.
+    assert!(spec_rules.iter().any(|r| r.contains("has(oldSelf.name)")));
     assert!(
-        rules
+        rules(&spec["properties"]["name"])
             .iter()
-            .any(|r| r["rule"].as_str().unwrap().contains("has(self.config)"))
+            .any(|r| r == "self == oldSelf")
     );
-    let screen_type_rules = spec["properties"]["screenType"]["x-kubernetes-validations"]
-        .as_array()
-        .unwrap();
-    assert_eq!(screen_type_rules[0]["rule"], "self == oldSelf");
+    assert_eq!(
+        rules(&spec["properties"]["screenType"]),
+        ["self == oldSelf"]
+    );
+}
+
+#[test]
+fn screen_spec_has_admission_patterns() {
+    let schema = schema_of::<Screen>();
+    let spec = &schema["properties"]["spec"];
+    assert!(
+        rules(&spec["properties"]["name"])
+            .iter()
+            .any(|r| r.contains("^[a-z][a-z0-9-]{1,98}[a-z0-9]$"))
+    );
+    assert!(
+        rules(&spec["properties"]["folderPath"])
+            .iter()
+            .any(|r| r.contains("^[a-z0-9-]+(/[a-z0-9-]+)*$"))
+    );
 }
 
 #[test]
