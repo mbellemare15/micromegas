@@ -86,6 +86,11 @@ suits Helm charts that keep dashboards as files (`.Files.Glob "screens/*.json"`)
 The screen name must follow the server's rules: 3 to 100 characters, lowercase letters, digits and
 single hyphens, starting with a letter. Use `spec.name` when the CR name does not qualify.
 
+An empty `instanceSelector` matches no instance, unlike the Kubernetes convention where it matches
+everything, so a Screen always opts in to the instances it writes to. Selection is cross-namespace:
+a Screen in one namespace can select an instance in another, which makes the security boundary who
+may create `Screen` objects rather than namespace isolation.
+
 ### Ownership
 
 The operator only writes screens whose `managed_by` is its own marker, or that do not exist yet.
@@ -94,6 +99,9 @@ reports `Ready=False` with reason `Conflict` and nothing is changed. Resolve it 
 renaming the server screen, or by setting its `managed_by` to the marker the CR expects.
 
 Edits made in the web app to a managed screen are reverted on the next resync.
+
+Deleting a `MicromegasInstance` while Screens still select it leaves the server screens in place;
+those CRs flip to `Ready=False` with reason `NoMatchingInstance`.
 
 Deleting the `Screen` CR deletes the server screen. A finalizer holds the CR until the delete
 succeeds; if the instance is unreachable the CR stays in `Terminating` until it is.
@@ -125,6 +133,48 @@ unauthorized (401/403) response and pointing at the instance's credentials.
 `screenName`, a `configHash` of the config sent, `lastSyncedAt`, and an `error` field when that
 instance failed.
 
+## Shipping screens from a service chart
+
+A service keeps its dashboards as JSON files under `screens/` in its own chart and renders one
+ConfigMap plus one `Screen` per file:
+
+    # templates/screens.yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: {{ .Release.Name }}-screens
+    data:
+      {{- range $path, $_ := .Files.Glob "screens/*.json" }}
+      {{ base $path }}: |
+        {{- $.Files.Get $path | nindent 4 }}
+      {{- end }}
+    {{- range $path, $_ := .Files.Glob "screens/*.json" }}
+    ---
+    apiVersion: micromegas.info/v1alpha1
+    kind: Screen
+    metadata:
+      name: {{ printf "%s-%s" $.Release.Name (base $path | trimSuffix ".json") }}
+    spec:
+      instanceSelector:
+        matchLabels: {{- toYaml $.Values.micromegas.instanceSelector | nindent 10 }}
+      folderPath: {{ $.Values.micromegas.folderPath | quote }}
+      configFrom:
+        configMapKeyRef:
+          name: {{ $.Release.Name }}-screens
+          key: {{ base $path }}
+    {{- end }}
+
+with values such as:
+
+    micromegas:
+      instanceSelector:
+        micromegas.info/env: prod
+      folderPath: my-service/prod
+
+Each file's name becomes the ConfigMap key and part of the `Screen` name, so adding a dashboard is
+one new file. The operator deletes the server screen when the `Screen` object goes away, which makes
+`helm uninstall` remove the dashboards too.
+
 ## Operator configuration
 
 | Helm value | Env var | Meaning |
@@ -137,7 +187,13 @@ instance failed.
 
 The operator runs one replica with a `Recreate` strategy.
 
+With `watchNamespace` empty the operator lists and watches `Screen`, `MicromegasInstance`, and
+`ConfigMap` objects cluster-wide, and reads the Secrets referenced by the instances it manages.
+Secrets are read on demand, never watched: a rotated credential is picked up by the next instance
+probe, so within five minutes.
+
 ## Local development
 
 `local_test_env/ai_scripts/operator_e2e.py` starts the monolith with auth disabled, creates a kind
-cluster, runs the operator from source, and exercises create, update, resync, conflict, and delete.
+cluster, builds and loads the operator image, installs the chart into `micromegas-system`, checks
+the service account's permissions, and exercises create, update, resync, conflict, and delete.

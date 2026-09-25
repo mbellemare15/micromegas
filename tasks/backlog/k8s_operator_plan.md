@@ -136,8 +136,9 @@ status:
   and exists for local development and the end-to-end script. The docs say so.
 - The instance reconciler resolves the Secret, obtains a token, calls `GET /api/screen-types`, and
   sets `Ready`. Reasons on failure: `SecretNotFound`, `TokenError`, `Unreachable`, `Unauthorized`.
-- The reconciler watches the referenced Secret; a Secret change re-enqueues the instance and drops
-  the cached token.
+- The Secret is read on demand by every probe, never watched: watching Secrets cluster-wide would
+  cache every Secret body in the operator. A rotated credential replaces the cached token on the
+  next probe, so within five minutes.
 
 ### Screen
 
@@ -229,19 +230,21 @@ changed to ours (for example by a one-time `micromegas-screens`-style import ste
 ## Controller Mechanics
 
 - Two `kube::runtime::Controller`s in one process:
-  - Instance controller: owns `MicromegasInstance`, watches `Secret` (mapped through
-    `spec.auth.*.secretRef`).
+  - Instance controller: owns `MicromegasInstance`, watches nothing else.
   - Screen controller: owns `Screen`, watches `MicromegasInstance` (any change re-enqueues every
     Screen whose selector matches) and `ConfigMap` (mapped to Screens whose `configFrom` names it).
+    It does not start until the instance reflector's initial LIST has landed, so a delete processed
+    at startup cannot drop a finalizer while the server screen is still there.
 - `kube::runtime::finalizer` on `Screen`.
-- Status via server-side apply on the `status` subresource with a fixed field manager.
+- Status via a merge patch on the `status` subresource with a fixed field manager.
 - Error policy: transient errors (network, 5xx, 429) requeue with the runtime's exponential backoff
   and set `Ready=False / ApiError` with the message; 4xx validation errors do not requeue until spec
   change or resync.
 - Token cache per instance keyed by instance UID; refresh 60 s before expiry; single in-flight
   refresh per instance.
 - One replica, `strategy: Recreate`. No leader election in v1.
-- `/healthz` and `/readyz` on a small axum listener for probes.
+- `/healthz` and `/readyz` on a small axum listener for probes; `/readyz` answers 503 until the
+  instance reflector has synced.
 - The operator uses `micromegas-tracing` for its own logs, metrics, and spans, configured through the
   same environment variables as the other services, so it can report into the Micromegas it manages.
 
@@ -252,10 +255,13 @@ changed to ours (for example by a one-time `micromegas-screens`-style import ste
 - `crds/` with the generated CRDs (installed by Helm's CRD mechanism; documented upgrade note that
   Helm does not upgrade CRDs, with a `kubectl apply -f crds/` step).
 - `Deployment`, `ServiceAccount`, `ClusterRole` + `ClusterRoleBinding` (or `Role`s when
-  `watchNamespaces` is set): `get/list/watch/update/patch` on the two CRDs, their `status` and
-  `finalizers`; `get/list/watch` on `configmaps` and `secrets`; `create/patch` on `events`.
-- Values: `image`, `clusterName` (required), `watchNamespaces` (empty = all), `defaultResyncInterval`,
-  `resources`, `telemetry` (ingestion URL and key for self-reporting, optional).
+  `watchNamespace` is set): `get/list/watch/update/patch` on the two CRDs, their `status` and
+  `finalizers`; `get/list/watch` on `configmaps`; `get` on `secrets`; `create/patch` on `events`.
+- Values: `image`, `clusterName` (required), `watchNamespace` (empty = all), `healthPort`,
+  `resources`, `telemetry` (ingestion URL and key for self-reporting, optional),
+  `podSecurityContext` and `securityContext` (defaults satisfy the restricted Pod Security
+  Standard), `serviceAccount.annotations`, `nameOverride`, `fullnameOverride`. There is no
+  `defaultResyncInterval`: the default lives in the CRD schema, where the apiserver applies it.
 
 Consumer pattern for the ArgoCD layout: a service umbrella chart adds `templates/screens.yaml` with
 one `Screen` per dashboard, either inline `config` or a `ConfigMap` built from
@@ -268,7 +274,8 @@ one `Screen` per dashboard, either inline `config` or a `ConfigMap` built from
 | No instance matches selector | no action | `Ready=False / NoMatchingInstance` |
 | Instance not Ready | skip, re-enqueue on instance change | `Ready=False / InstanceNotReady` |
 | Secret missing / token error | instance not Ready | instance `SecretNotFound` / `TokenError` |
-| Server 401/403 | instance not Ready, screens `InstanceNotReady` | `Unauthorized` |
+| Server 401/403 on the instance probe | instance not Ready, screens `InstanceNotReady` | instance `Unauthorized` |
+| Server 401/403 on a screen write | no retry until resync | screen `ApiError`, message points at the instance credentials |
 | Screen name or folder path invalid | no action | `InvalidName` |
 | Server 400 on create/update | no retry until spec change | `InvalidConfig` (server message) |
 | Existing screen not ours | no action | `Conflict` |
@@ -286,7 +293,9 @@ one `Screen` per dashboard, either inline `config` or a `ConfigMap` built from
   401 → `Unauthorized`, 5xx → transient, token refresh on expiry.
 - **CRD snapshot**: `crdgen` output committed; CI diff check.
 - **End-to-end (manual, scripted)**: `local_test_env/ai_scripts/operator_e2e.py` starts the monolith
-  with `--disable-auth`, creates a `kind` cluster, installs the chart, applies a sample
+  with `--disable-auth`, creates a `kind` cluster, builds the operator image and loads it into the
+  cluster, installs the chart (which installs the CRDs), sweeps the service account's permissions
+  with `kubectl auth can-i`, applies a sample
   `MicromegasInstance` (no `auth`) and two `Screen`s (inline and ConfigMap) in a nested folder path,
   then checks the server via `GET /api/screens` and `GET /api/folders` (the folder must appear
   implicitly); edits a screen through the API and
