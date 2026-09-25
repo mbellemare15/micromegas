@@ -1,6 +1,6 @@
-//! Unit tests for app_db models (name validation and normalization)
+//! Unit tests for analytics-web-api validation (name validation and normalization)
 
-use analytics_web_srv::app_db::{normalize_name, validate_folder_path, validate_name};
+use analytics_web_api::{normalize_name, validate_folder_path, validate_name};
 
 #[test]
 fn test_normalize_name() {

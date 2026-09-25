@@ -6,6 +6,7 @@ use crate::app_db::{
 };
 use crate::auth::ValidatedUser;
 use crate::screen_types::ScreenType;
+use analytics_web_api::ErrorResponse;
 use axum::{
     Extension, Json,
     extract::Path,
@@ -13,24 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use micromegas::tracing::prelude::*;
-use serde::Serialize;
 use sqlx::PgPool;
-
-/// Error response for screen operations.
-#[derive(Debug, Serialize)]
-pub struct ErrorResponse {
-    code: String,
-    message: String,
-}
-
-impl ErrorResponse {
-    fn new(code: &str, message: &str) -> Self {
-        Self {
-            code: code.to_string(),
-            message: message.to_string(),
-        }
-    }
-}
 
 /// Unified error type for screen handlers.
 #[derive(Debug)]

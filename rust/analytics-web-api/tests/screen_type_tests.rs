@@ -1,6 +1,6 @@
-//! Unit tests for screen_types module
+//! Unit tests for analytics-web-api screen_type module
 
-use analytics_web_srv::screen_types::ScreenType;
+use analytics_web_api::ScreenType;
 
 #[test]
 fn test_screen_type_serialization() {

@@ -12,6 +12,7 @@ authors.workspace = true
 
 [dependencies]
 micromegas = { workspace = true, features = ["server", "jemalloc-metrics"] }
+analytics-web-api = { workspace = true, features = ["sqlx"] }
 
 anyhow.workspace = true
 arrow-ipc.workspace = true
