@@ -5,11 +5,12 @@ use kube::core::ObjectMeta;
 use micromegas_operator::conditions::reasons;
 use micromegas_operator::crds::{
     MicromegasInstance, MicromegasInstanceSpec, Screen, ScreenInstanceStatus, ScreenSpec,
+    ScreenStatus,
 };
 use micromegas_operator::plan::{self, Desired};
 use micromegas_operator::reconcile::screen::{
     InstanceOutcome, aggregate, config_from_configmap, desired_identity, prior_instance_status,
-    sorted_by_namespace_name, sync_success_status,
+    prior_instances, sorted_by_namespace_name, sync_success_status,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -176,6 +177,28 @@ fn prior_instance_status_matches_namespace_and_name() {
     assert_eq!(found.config_hash.as_deref(), Some("sha256:bbb"));
     assert!(prior_instance_status(&previous, "m", "missing").is_none());
     assert!(prior_instance_status(&previous, "other-ns", "a").is_none());
+}
+
+#[test]
+fn prior_instances_returns_status_instances_unchanged() {
+    let mut screen = screen("overview", None, "");
+    let carried = vec![
+        instance_status("m", "a", "sha256:aaa", "2024-01-01T00:00:00Z"),
+        instance_status("m", "b", "sha256:bbb", "2024-01-02T00:00:00Z"),
+    ];
+    screen.status = Some(ScreenStatus {
+        instances: carried.clone(),
+        ..Default::default()
+    });
+
+    assert_eq!(prior_instances(&screen), carried);
+}
+
+#[test]
+fn prior_instances_empty_when_no_status() {
+    let screen = screen("overview", None, "");
+    assert!(screen.status.is_none());
+    assert_eq!(prior_instances(&screen), Vec::new());
 }
 
 fn desired() -> Desired {

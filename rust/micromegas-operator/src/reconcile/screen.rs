@@ -125,6 +125,17 @@ pub fn aggregate(outcomes: &[InstanceOutcome]) -> (bool, &'static str, String) {
     )
 }
 
+/// The per-instance status the previous reconcile recorded, or an empty list
+/// for a Screen that has never synced. Used both to carry status forward
+/// through a transient error and to look up one instance's prior entry.
+pub fn prior_instances(screen: &Screen) -> Vec<ScreenInstanceStatus> {
+    screen
+        .status
+        .as_ref()
+        .map(|s| s.instances.clone())
+        .unwrap_or_default()
+}
+
 /// Looks up the status the previous reconcile recorded for one instance, so a
 /// fresh sync can carry its config_hash/last_synced_at forward instead of
 /// wiping them (see `sync_success_status`).
@@ -358,18 +369,13 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
             // A ConfigMap read hiccup is not evidence that the last known sync
             // state is wrong; keep the carried-forward per-instance status so a
             // retry doesn't blank config_hash/last_synced_at for every instance.
-            let prior_instances = screen
-                .status
-                .as_ref()
-                .map(|s| s.instances.clone())
-                .unwrap_or_default();
             write_status(
                 &api,
                 &screen,
                 false,
                 reasons::API_ERROR,
                 &message,
-                prior_instances,
+                prior_instances(&screen),
             )
             .await?;
             return Ok(Action::requeue(ctx.backoff.next(&key)));
@@ -387,11 +393,7 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
         matching_instances(&screen.spec.instance_selector, ctx.instances.state())
             .map_err(Error::Transient)?,
     );
-    let previous = screen
-        .status
-        .as_ref()
-        .map(|s| s.instances.as_slice())
-        .unwrap_or(&[]);
+    let previous = prior_instances(&screen);
     let mut outcomes = Vec::with_capacity(instances.len());
     let mut requeue = DEFAULT_REQUEUE;
     for instance in &instances {
@@ -400,7 +402,7 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
         }
         let inst_namespace = instance.namespace().unwrap_or_default();
         let inst_name = instance.name_any();
-        let prior = prior_instance_status(previous, &inst_namespace, &inst_name);
+        let prior = prior_instance_status(&previous, &inst_namespace, &inst_name);
         outcomes.push(sync_one(&screen, &desired, instance, prior, &ctx).await);
     }
 
