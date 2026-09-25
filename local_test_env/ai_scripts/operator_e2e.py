@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 """End-to-end check of micromegas-operator against a kind cluster and a local monolith.
 
-Prerequisites: docker, kind, kubectl, cargo. Run from anywhere:
+Prerequisites: docker, kind, kubectl, helm. Run from anywhere:
     cd python/micromegas && poetry run python ../../local_test_env/ai_scripts/operator_e2e.py
 
-Steps: start monolith (--disable-auth) -> kind cluster -> CRDs -> operator (cargo run)
+Steps: start monolith (--disable-auth) -> build and load the operator image into kind ->
+helm install the chart (which installs the CRDs) -> RBAC sweep with `kubectl auth can-i`
 -> MicromegasInstance Ready -> inline + ConfigMap Screens appear on the server with the
 k8s:// managed_by -> implicit folder listed -> UI-style edit is reverted on resync
 -> unmanaged screen with the same name yields Conflict -> deleting the CR deletes the screen.
+
+Environment:
+    E2E_SKIP_IMAGE_BUILD=1  reuse the operator image already in the local docker daemon
+    E2E_WEB_URL_FROM_CLUSTER  URL the in-cluster operator uses to reach the host monolith.
+        Defaults to http://host.docker.internal:3000, which works with Docker Desktop. On
+        Linux use the docker bridge address instead, e.g. http://172.17.0.1:3000.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,10 +32,30 @@ CLUSTER = "micromegas-operator-e2e"
 WEB = "http://127.0.0.1:3000"
 API = f"{WEB}/api"
 CLUSTER_NAME = "e2e"
+NAMESPACE = "micromegas-system"
+RELEASE = "micromegas-operator"
+IMAGE = "marcantoinedesroches/micromegas-operator:latest"
+SERVICE_ACCOUNT = f"system:serviceaccount:{NAMESPACE}:{RELEASE}"
+WEB_URL_FROM_CLUSTER = os.environ.get(
+    "E2E_WEB_URL_FROM_CLUSTER", "http://host.docker.internal:3000"
+)
+
+# Every permission the operator needs at runtime, as (verbs, resource) pairs.
+RBAC_CHECKS = [
+    ("get/list/watch/update/patch", "screens.micromegas.info"),
+    ("get/update/patch", "screens.micromegas.info/status"),
+    ("update", "screens.micromegas.info/finalizers"),
+    ("get/list/watch", "micromegasinstances.micromegas.info"),
+    ("get/update/patch", "micromegasinstances.micromegas.info/status"),
+    ("get/list/watch", "configmaps"),
+    ("get", "secrets"),
+    ("create", "events"),
+    ("create", "events.events.k8s.io"),
+]
 
 
 def check_prerequisites():
-    missing = [tool for tool in ("docker", "kind", "kubectl", "cargo") if shutil.which(tool) is None]
+    missing = [tool for tool in ("docker", "kind", "kubectl", "helm") if shutil.which(tool) is None]
     if missing:
         raise SystemExit(f"Missing prerequisites on PATH: {', '.join(missing)}")
 
@@ -69,11 +97,36 @@ def ready_reason(kind, name, ns="default"):
     return (ready[0]["status"], ready[0]["reason"]) if ready else (None, None)
 
 
+def install_operator():
+    if os.environ.get("E2E_SKIP_IMAGE_BUILD") != "1":
+        run(f"python3 {REPO}/build/build_docker_images.py operator")
+    run(f"kind load docker-image {IMAGE} --name {CLUSTER}")
+    run(f"helm install {RELEASE} {REPO}/charts/micromegas-operator"
+        f" --namespace {NAMESPACE} --create-namespace"
+        f" --set clusterName={CLUSTER_NAME}"
+        " --set image.pullPolicy=Never --set image.tag=latest --wait")
+    run(f"kubectl -n {NAMESPACE} rollout status deploy/{RELEASE} --timeout=180s")
+
+
+def check_rbac():
+    failures = []
+    for verbs, resource in RBAC_CHECKS:
+        for verb in verbs.split("/"):
+            result = run(f"kubectl auth can-i {verb} {resource} --as={SERVICE_ACCOUNT}",
+                         check=False, capture=True)
+            answer = (result.stdout or "").strip().splitlines()[-1:] or [""]
+            if answer[0] != "yes":
+                failures.append(f"{verb} {resource} -> {answer[0] or result.stderr.strip()}")
+    if failures:
+        raise SystemExit("RBAC gaps: " + "; ".join(failures))
+    print("ok: service account holds every permission the operator needs")
+
+
 INSTANCE = f"""
 apiVersion: micromegas.info/v1alpha1
 kind: MicromegasInstance
 metadata: {{ name: local, namespace: default, labels: {{ env: e2e }} }}
-spec: {{ url: "{WEB}", resyncInterval: "1m" }}
+spec: {{ url: "{WEB_URL_FROM_CLUSTER}", resyncInterval: "1m" }}
 """
 
 SCREEN_INLINE = """
@@ -114,21 +167,14 @@ spec:
 
 def main():
     check_prerequisites()
-    operator = None
     try:
         run(f"python3 {REPO}/local_test_env/ai_scripts/start_services.py --monolith")
         wait_for("monolith web API", lambda: requests.get(f"{API}/screens", timeout=2).ok)
 
         run(f"kind delete cluster --name {CLUSTER}", check=False)
         run(f"kind create cluster --name {CLUSTER}")
-        run(f"kubectl apply -f {REPO}/charts/micromegas-operator/crds/")
-
-        operator = subprocess.Popen(
-            ["cargo", "run", "-p", "micromegas-operator", "--", "--cluster-name", CLUSTER_NAME,
-             "--health-listen", "127.0.0.1:18080"],
-            cwd=REPO / "rust",
-        )
-        wait_for("operator health", lambda: requests.get("http://127.0.0.1:18080/healthz", timeout=1).ok, timeout=600)
+        install_operator()
+        check_rbac()
 
         kubectl_apply(INSTANCE)
         wait_for("instance Ready", lambda: ready_reason("mmi", "local") == ("True", "Connected"))
@@ -164,9 +210,6 @@ def main():
 
         print("\nE2E PASSED")
     finally:
-        if operator:
-            operator.terminate()
-            operator.wait(timeout=30)
         run(f"kind delete cluster --name {CLUSTER}", check=False)
         run(f"python3 {REPO}/local_test_env/ai_scripts/stop_services.py", check=False)
 
