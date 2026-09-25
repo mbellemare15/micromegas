@@ -43,7 +43,6 @@ ignored = [
     "axum",
     "chrono",
     "futures",
-    "humantime",
     "micromegas",
 ]
 

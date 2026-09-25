@@ -5,3 +5,4 @@ pub mod client;
 pub mod conditions;
 pub mod crds;
 pub mod plan;
+pub mod reconcile;
