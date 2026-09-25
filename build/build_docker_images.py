@@ -39,6 +39,7 @@ SERVICES = {
     "redis-exporter": ("redis-exporter.Dockerfile", "Redis metrics exporter"),
     "all": ("all-in-one.Dockerfile", "All services in one image (dev/test)"),
     "monolith": ("monolith.Dockerfile", "Single-process monolith (all roles)"),
+    "operator": ("operator.Dockerfile", "Kubernetes operator for screens"),
 }
 
 

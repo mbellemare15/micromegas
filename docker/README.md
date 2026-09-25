@@ -4,7 +4,7 @@ This directory contains Dockerfiles for building micromegas services.
 
 ## Images
 
-Eight services are published to Docker Hub under `marcantoinedesroches/`:
+Nine services are published to Docker Hub under `marcantoinedesroches/`:
 
 | Dockerfile | Image | Description |
 |------------|-------|-------------|
@@ -16,6 +16,7 @@ Eight services are published to Docker Hub under `marcantoinedesroches/`:
 | `analytics-web.Dockerfile` | `marcantoinedesroches/micromegas-analytics-web` | Analytics web app (frontend + backend) |
 | `redis-exporter.Dockerfile` | `marcantoinedesroches/micromegas-redis-exporter` | Redis metrics exporter |
 | `monolith.Dockerfile` | `marcantoinedesroches/micromegas-monolith` | Single-process monolith (all roles in one binary) |
+| `operator.Dockerfile` | `marcantoinedesroches/micromegas-operator` | Kubernetes operator for screens |
 | `all-in-one.Dockerfile` | `micromegas-all` | All services in one image (dev/test only, not published) |
 | `github-runner.Dockerfile` | `micromegas-github-runner` | Self-hosted GitHub Actions runner (see `build/dev_worker.py`) |
 
