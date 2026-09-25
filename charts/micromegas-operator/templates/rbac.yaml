@@ -19,8 +19,12 @@ rules:
     resources: ["screens/finalizers"]
     verbs: ["update"]
   - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
+    resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
+  # Secrets are read on demand by the instance probe, never watched or listed.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
   - apiGroups: ["", "events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]

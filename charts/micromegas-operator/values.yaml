@@ -23,6 +23,27 @@ resources:
   requests: { cpu: 50m, memory: 64Mi }
   limits: { memory: 256Mi }
 
+# Defaults satisfy the restricted Pod Security Standard. The image runs as
+# 65532:65532 and the operator writes to no path on disk.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+serviceAccount:
+  annotations: {}
+
+nameOverride: ""
+fullnameOverride: ""
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

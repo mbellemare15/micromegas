@@ -35,4 +35,5 @@ RUN apt-get update && \
 COPY --from=builder /build/micromegas-operator /usr/local/bin/
 
 EXPOSE 8080
+USER 65532:65532
 ENTRYPOINT ["micromegas-operator"]

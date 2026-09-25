@@ -1,8 +1,11 @@
 {{- define "micromegas-operator.name" -}}
-{{ .Chart.Name }}
+{{- default .Chart.Name .Values.nameOverride }}
 {{- end }}
 {{- define "micromegas-operator.fullname" -}}
-{{- if contains .Chart.Name .Release.Name }}{{ .Release.Name }}{{ else }}{{ printf "%s-%s" .Release.Name .Chart.Name }}{{ end }}
+{{- if .Values.fullnameOverride }}{{ .Values.fullnameOverride }}{{ else }}
+{{- $name := include "micromegas-operator.name" . }}
+{{- if contains $name .Release.Name }}{{ .Release.Name }}{{ else }}{{ printf "%s-%s" .Release.Name $name }}{{ end }}
+{{- end }}
 {{- end }}
 {{- define "micromegas-operator.labels" -}}
 app.kubernetes.io/name: {{ include "micromegas-operator.name" . }}
