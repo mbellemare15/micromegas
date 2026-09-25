@@ -1,0 +1,14 @@
+apiVersion: micromegas.info/v1alpha1
+kind: Screen
+metadata:
+  name: service-overview
+  namespace: my-service
+spec:
+  instanceSelector:
+    matchLabels:
+      micromegas.info/env: prod
+  folderPath: my-service/prod
+  config:
+    timeRangeFrom: now-1h
+    timeRangeTo: now
+    cells: []

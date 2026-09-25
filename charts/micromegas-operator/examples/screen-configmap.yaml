@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-service-screens
+  namespace: my-service
+data:
+  errors.json: |
+    { "timeRangeFrom": "now-6h", "timeRangeTo": "now", "cells": [] }
+---
+apiVersion: micromegas.info/v1alpha1
+kind: Screen
+metadata:
+  name: service-errors
+  namespace: my-service
+spec:
+  instanceSelector:
+    matchLabels:
+      micromegas.info/env: prod
+  folderPath: my-service/prod
+  configFrom:
+    configMapKeyRef:
+      name: my-service-screens
+      key: errors.json

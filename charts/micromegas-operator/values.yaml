@@ -1,0 +1,29 @@
+image:
+  repository: marcantoinedesroches/micromegas-operator
+  tag: ""            # defaults to appVersion
+  pullPolicy: IfNotPresent
+
+# Required. Stable identifier of this cluster; becomes part of every managed
+# screen's managed_by marker (k8s://<clusterName>/<namespace>/<name>).
+clusterName: ""
+
+# Empty watches all namespaces (ClusterRole). Set to restrict to one namespace (Role).
+watchNamespace: ""
+
+healthPort: 8080
+
+# Self-telemetry into a Micromegas ingestion server. Leave url empty to disable.
+telemetry:
+  url: ""
+  apiKeySecret:
+    name: ""
+    key: api-key
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 256Mi }
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}

@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "micromegas-operator.fullname" . }}
+  labels: {{- include "micromegas-operator.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {{- include "micromegas-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "micromegas-operator.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "micromegas-operator.fullname" . }}
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: MICROMEGAS_OPERATOR_CLUSTER_NAME
+              value: {{ required "clusterName is required" .Values.clusterName | quote }}
+            {{- if ne .Values.watchNamespace "" }}
+            - name: MICROMEGAS_OPERATOR_WATCH_NAMESPACE
+              value: {{ .Values.watchNamespace | quote }}
+            {{- end }}
+            - name: MICROMEGAS_OPERATOR_HEALTH_LISTEN
+              value: "0.0.0.0:{{ .Values.healthPort }}"
+            {{- if .Values.telemetry.url }}
+            - name: MICROMEGAS_TELEMETRY_URL
+              value: {{ .Values.telemetry.url | quote }}
+            {{- if .Values.telemetry.apiKeySecret.name }}
+            - name: MICROMEGAS_INGESTION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.telemetry.apiKeySecret.name }}
+                  key: {{ .Values.telemetry.apiKeySecret.key }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.healthPort }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,15 @@
+apiVersion: micromegas.info/v1alpha1
+kind: MicromegasInstance
+metadata:
+  name: prod
+  namespace: micromegas
+  labels:
+    micromegas.info/env: prod
+spec:
+  url: https://micromegas.example.com
+  auth:
+    oidcClientCredentials:
+      issuer: https://idp.example.com/realms/example
+      secretRef:
+        name: micromegas-operator-oidc
+  resyncInterval: 10m

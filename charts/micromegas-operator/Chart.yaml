@@ -1,0 +1,9 @@
+apiVersion: v2
+name: micromegas-operator
+description: Kubernetes operator that manages Micromegas screens from Screen custom resources
+type: application
+version: 0.1.0
+appVersion: "0.32.0"
+home: https://micromegas.info/
+sources:
+  - https://github.com/madesroches/micromegas
