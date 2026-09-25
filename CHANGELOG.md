@@ -4,6 +4,17 @@ This file documents the historical progress of the Micromegas project. For curre
 
 ## Unreleased
 
+* **Kubernetes:** New `micromegas-operator` (`rust/micromegas-operator`, image
+  `marcantoinedesroches/micromegas-operator`, chart `charts/micromegas-operator`) reconciling
+  `Screen` and `MicromegasInstance` custom resources (`micromegas.info/v1alpha1`) into
+  analytics-web-srv screens over the existing REST API. Ownership reuses `screens.managed_by`,
+  stamped `k8s://<cluster>/<namespace>/<name>`; screens owned by anyone else are reported as
+  `Conflict` and never overwritten. Auth is OIDC client credentials from a Secret. See
+  `mkdocs/docs/admin/kubernetes-operator.md`. **Minor breaking change:** the screen wire types
+  (`Screen`, `CreateScreenRequest`, `UpdateScreenRequest`, `ErrorResponse`), `ScreenType`, and the
+  name/folder validators moved from `analytics-web-srv` into the new `analytics-web-api` crate;
+  `analytics_web_srv::app_db` and `analytics_web_srv::screen_types` re-export them, and
+  `ErrorResponse`'s fields are now public.
 * **Dependencies:** Bump `go.opentelemetry.io/otel`, `otel/sdk`, and the
   `otel/exporters/otlp/otlptrace`/`otlptracegrpc` exporters in the `grafana/` plugin from
   v1.44.0/v1.38.0 to v1.46.0, resolving three Dependabot alerts for the exporter

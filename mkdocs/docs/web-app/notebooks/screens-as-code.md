@@ -14,6 +14,9 @@ The workflow is inspired by Terraform:
 - **`plan`** — preview what would change
 - **`apply`** — push local state to server
 
+Teams deploying on Kubernetes can instead declare screens as `Screen` custom resources and let
+the [Kubernetes operator](../../admin/kubernetes-operator.md) keep the server in sync.
+
 ## Getting Started
 
 ### Installation
