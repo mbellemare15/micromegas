@@ -127,7 +127,7 @@ pub fn aggregate(outcomes: &[InstanceOutcome]) -> (bool, &'static str, String) {
 
 /// Looks up the status the previous reconcile recorded for one instance, so a
 /// fresh sync can carry its config_hash/last_synced_at forward instead of
-/// wiping them (see `sync_success_status` and item 4 in the review).
+/// wiping them (see `sync_success_status`).
 pub fn prior_instance_status<'a>(
     previous: &'a [ScreenInstanceStatus],
     namespace: &str,
@@ -355,7 +355,23 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
             return Ok(Action::await_change());
         }
         Err(ResolveError::Transient(message)) => {
-            write_status(&api, &screen, false, reasons::API_ERROR, &message, vec![]).await?;
+            // A ConfigMap read hiccup is not evidence that the last known sync
+            // state is wrong; keep the carried-forward per-instance status so a
+            // retry doesn't blank config_hash/last_synced_at for every instance.
+            let prior_instances = screen
+                .status
+                .as_ref()
+                .map(|s| s.instances.clone())
+                .unwrap_or_default();
+            write_status(
+                &api,
+                &screen,
+                false,
+                reasons::API_ERROR,
+                &message,
+                prior_instances,
+            )
+            .await?;
             return Ok(Action::requeue(ctx.backoff.next(&key)));
         }
     };
