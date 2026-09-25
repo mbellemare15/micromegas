@@ -45,9 +45,6 @@ ignored = [
     "futures",
     "humantime",
     "micromegas",
-    "reqwest",
-    "thiserror",
-    "tokio",
 ]
 
 [lib]
