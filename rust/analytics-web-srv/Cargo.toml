@@ -11,8 +11,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-micromegas = { workspace = true, features = ["server", "jemalloc-metrics"] }
 analytics-web-api = { workspace = true, features = ["sqlx"] }
+micromegas = { workspace = true, features = ["server", "jemalloc-metrics"] }
 
 anyhow.workspace = true
 arrow-ipc.workspace = true

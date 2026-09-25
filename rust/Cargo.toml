@@ -17,6 +17,7 @@ categories = ["development-tools::profiling", "development-tools::debugging"]
 
 
 [workspace.dependencies]
+analytics-web-api = { path = "analytics-web-api", version = "0.32.0" }
 micromegas-analytics = { path = "analytics", version = "0.32.0" }
 micromegas-auth = { path = "auth", version = "0.32.0" }
 micromegas-datafusion-extensions = { path = "datafusion-extensions", version = "0.32.0" }
@@ -31,7 +32,6 @@ micromegas-telemetry-sink = { path = "telemetry-sink", version = "0.32.0" }
 micromegas-tracing = { path = "tracing", version = "0.32.0", default-features = false }
 micromegas-transit = { path = "transit", version = "0.32.0" }
 micromegas = { path = "public", version = "0.32.0" }
-analytics-web-api = { path = "analytics-web-api", version = "0.32.0" }
 
 anyhow = "1.0"
 arrow-flight = { version = "59.2", features = ["flight-sql-experimental"] }
