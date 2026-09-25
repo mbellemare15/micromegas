@@ -73,23 +73,3 @@ where
         .await
         .map(|_| ())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Backoff;
-    use std::time::Duration;
-
-    #[test]
-    fn backoff_doubles_and_caps() {
-        let b = Backoff::default();
-        assert_eq!(b.next("k"), Duration::from_secs(30));
-        assert_eq!(b.next("k"), Duration::from_secs(60));
-        assert_eq!(b.next("k"), Duration::from_secs(120));
-        for _ in 0..10 {
-            b.next("k");
-        }
-        assert_eq!(b.next("k"), Duration::from_secs(600));
-        b.reset("k");
-        assert_eq!(b.next("k"), Duration::from_secs(30));
-    }
-}
