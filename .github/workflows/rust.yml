@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'rust/**'
+      - 'charts/micromegas-operator/crds/**'
       - 'build/rust_ci.py'
       - 'build/rust_command.py'
       - '.github/workflows/rust.yml'
@@ -12,6 +13,7 @@ on:
     branches: [ "main" ]
     paths:
       - 'rust/**'
+      - 'charts/micromegas-operator/crds/**'
       - 'build/rust_ci.py'
       - 'build/rust_command.py'
       - '.github/workflows/rust.yml'

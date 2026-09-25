@@ -1,0 +1,64 @@
+[package]
+name = "micromegas-operator"
+description = "Kubernetes operator that reconciles Screen custom resources into analytics-web-srv screens"
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+default-run = "micromegas-operator"
+
+[dependencies]
+analytics-web-api.workspace = true
+micromegas.workspace = true
+
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+humantime.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+reqwest.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+
+# main.rs is a placeholder; these are wired in by the conditions/plan/auth/client/
+# reconcile/health modules that later tasks add.
+[package.metadata.cargo-machete]
+ignored = [
+    "analytics-web-api",
+    "axum",
+    "chrono",
+    "futures",
+    "humantime",
+    "micromegas",
+    "reqwest",
+    "sha2",
+    "thiserror",
+    "tokio",
+]
+
+[lib]
+name = "micromegas_operator"
+path = "src/lib.rs"
+
+[[bin]]
+name = "micromegas-operator"
+path = "src/main.rs"
+
+[[bin]]
+name = "crdgen"
+path = "src/bin/crdgen.rs"

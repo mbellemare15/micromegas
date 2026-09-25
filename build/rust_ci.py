@@ -25,6 +25,11 @@ def run_native():
             wasm_crate,
         ),
         ("Running Tests", "cargo test", None),
+        (
+            "CRD Freshness Check",
+            "cargo run -p micromegas-operator --bin crdgen -- --check ../charts/micromegas-operator/crds",
+            None,
+        ),
     ]
     _run_steps("Native", steps)
 
