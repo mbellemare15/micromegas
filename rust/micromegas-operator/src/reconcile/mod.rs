@@ -1,4 +1,5 @@
 pub mod instance;
+pub mod screen;
 
 use crate::auth::TokenCache;
 use crate::crds::MicromegasInstance;

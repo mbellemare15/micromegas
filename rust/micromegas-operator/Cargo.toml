@@ -41,7 +41,6 @@ wiremock.workspace = true
 ignored = [
     "analytics-web-api",
     "axum",
-    "chrono",
     "futures",
     "micromegas",
 ]

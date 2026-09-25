@@ -1,8 +1,8 @@
 //! Tests for micromegas_operator::plan.
 
 use analytics_web_api::Screen;
-use micromegas_operator::plan::{config_hash, managed_by, plan, Action, Desired};
-use serde_json::{json, Value};
+use micromegas_operator::plan::{Action, Desired, config_hash, managed_by, plan};
+use serde_json::{Value, json};
 
 fn desired() -> Desired {
     Desired {
