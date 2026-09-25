@@ -45,6 +45,7 @@ def kubectl_apply(manifest):
 def wait_for(description, predicate, timeout=120, interval=2):
     print(f"... waiting for {description}")
     deadline = time.time() + timeout
+    last = None
     while time.time() < deadline:
         try:
             if predicate():
@@ -53,7 +54,7 @@ def wait_for(description, predicate, timeout=120, interval=2):
         except Exception as e:  # noqa: BLE001 - polling
             last = e
         time.sleep(interval)
-    raise SystemExit(f"TIMEOUT waiting for {description}")
+    raise SystemExit(f"TIMEOUT waiting for {description} (last error: {last})")
 
 
 def screen(name):

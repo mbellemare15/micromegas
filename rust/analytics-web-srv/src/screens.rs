@@ -6,7 +6,7 @@ use crate::app_db::{
 };
 use crate::auth::ValidatedUser;
 use crate::screen_types::ScreenType;
-use analytics_web_api::ErrorResponse;
+pub use analytics_web_api::ErrorResponse;
 use axum::{
     Extension, Json,
     extract::Path,

@@ -131,7 +131,7 @@ instance failed.
 |---|---|---|
 | `clusterName` | `MICROMEGAS_OPERATOR_CLUSTER_NAME` | Required; part of `managed_by` |
 | `watchNamespace` | `MICROMEGAS_OPERATOR_WATCH_NAMESPACE` | Restrict to one namespace; empty means all |
-| `healthPort` | `MICROMEGAS_OPERATOR_HEALTH_LISTEN` | `/healthz` and `/readyz` |
+| `healthPort` | `MICROMEGAS_OPERATOR_HEALTH_LISTEN` | Port for `/healthz` and `/readyz`; the chart renders it as `0.0.0.0:<healthPort>` into `MICROMEGAS_OPERATOR_HEALTH_LISTEN` |
 | `telemetry.url` | `MICROMEGAS_TELEMETRY_URL` | Send the operator's own logs and metrics to an ingestion server |
 | `telemetry.apiKeySecret` | `MICROMEGAS_INGESTION_API_KEY` | Ingestion key for the above |
 

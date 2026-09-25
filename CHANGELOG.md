@@ -13,8 +13,10 @@ This file documents the historical progress of the Micromegas project. For curre
   `mkdocs/docs/admin/kubernetes-operator.md`. **Minor breaking change:** the screen wire types
   (`Screen`, `CreateScreenRequest`, `UpdateScreenRequest`, `ErrorResponse`), `ScreenType`, and the
   name/folder validators moved from `analytics-web-srv` into the new `analytics-web-api` crate;
-  `analytics_web_srv::app_db` and `analytics_web_srv::screen_types` re-export them, and
-  `ErrorResponse`'s fields are now public.
+  `analytics_web_srv::app_db` re-exports `Screen`, `CreateScreenRequest`, `UpdateScreenRequest`,
+  `ValidationError`, and the validators; `analytics_web_srv::screen_types` re-exports
+  `ScreenType`; `analytics_web_srv::screens` re-exports `ErrorResponse`, whose fields are now
+  public.
 * **Dependencies:** Bump `go.opentelemetry.io/otel`, `otel/sdk`, and the
   `otel/exporters/otlp/otlptrace`/`otlptracegrpc` exporters in the `grafana/` plugin from
   v1.44.0/v1.38.0 to v1.46.0, resolving three Dependabot alerts for the exporter
