@@ -46,7 +46,6 @@ ignored = [
     "humantime",
     "micromegas",
     "reqwest",
-    "sha2",
     "thiserror",
     "tokio",
 ]
