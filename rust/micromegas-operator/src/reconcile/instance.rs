@@ -15,6 +15,27 @@ use std::time::Duration;
 const PROBE_INTERVAL: Duration = Duration::from_secs(300);
 const MIN_RESYNC: Duration = Duration::from_secs(60);
 
+/// Both controllers share one `Backoff` map, so the kind has to be part of the
+/// key: a Screen and a MicromegasInstance can carry the same namespace/name.
+fn backoff_key(namespace: &str, name: &str) -> String {
+    format!("instance/{namespace}/{name}")
+}
+
+/// The token cache is keyed by instance UID and nothing deletes an instance's
+/// entry, so drop the ones whose instance is gone from the store.
+fn evict_stale_tokens(ctx: &Context) {
+    let live: std::collections::HashSet<String> = ctx
+        .instances
+        .state()
+        .iter()
+        .filter_map(|i| i.uid())
+        .collect();
+    ctx.tokens
+        .lock()
+        .expect("token map mutex")
+        .retain(|uid, _| live.contains(uid));
+}
+
 pub fn resync_interval(spec: &MicromegasInstanceSpec) -> Result<Duration, String> {
     let parsed = humantime::parse_duration(&spec.resync_interval)
         .map_err(|e| format!("resyncInterval '{}' is invalid: {e}", spec.resync_interval))?;
@@ -155,7 +176,9 @@ pub async fn reconcile(
     conditions::upsert(&mut status.conditions, condition);
     patch_status(&api, &name, &status).await?;
 
-    let key = format!("{namespace}/{name}");
+    evict_stale_tokens(&ctx);
+
+    let key = backoff_key(&namespace, &name);
     Ok(match outcome {
         Ok(()) => {
             ctx.backoff.reset(&key);
@@ -166,10 +189,9 @@ pub async fn reconcile(
 }
 
 pub fn error_policy(instance: Arc<MicromegasInstance>, err: &Error, ctx: Arc<Context>) -> Action {
-    let key = format!(
-        "{}/{}",
-        instance.namespace().unwrap_or_default(),
-        instance.name_any()
+    let key = backoff_key(
+        &instance.namespace().unwrap_or_default(),
+        &instance.name_any(),
     );
     warn!("instance {key} reconcile failed: {err}");
     Action::requeue(ctx.backoff.next(&key))

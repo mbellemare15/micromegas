@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +26,15 @@ pub struct Context {
     pub tokens: Mutex<HashMap<String, (String, Arc<TokenCache>)>>,
     pub recorder: Recorder,
     pub backoff: Backoff,
+    /// Set once the instance reflector's initial LIST has landed. Reconcilers
+    /// that would otherwise read an empty store must refuse to act before then.
+    pub instances_ready: Arc<AtomicBool>,
+}
+
+impl Context {
+    pub fn instances_ready(&self) -> bool {
+        self.instances_ready.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,7 +80,11 @@ where
     K: Resource<DynamicType = ()> + Clone + DeserializeOwned + Debug,
 {
     let patch = serde_json::json!({ "status": status });
-    api.patch_status(name, &PatchParams::default(), &Patch::Merge(&patch))
+    let params = PatchParams {
+        field_manager: Some(FIELD_MANAGER.to_string()),
+        ..Default::default()
+    };
+    api.patch_status(name, &params, &Patch::Merge(&patch))
         .await
         .map(|_| ())
 }

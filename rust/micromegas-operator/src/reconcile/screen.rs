@@ -17,6 +17,12 @@ use std::time::Duration;
 pub const FINALIZER: &str = "micromegas.info/screen";
 const DEFAULT_REQUEUE: Duration = Duration::from_secs(600);
 
+/// Both controllers share one `Backoff` map, so the kind has to be part of the
+/// key: a Screen and a MicromegasInstance can carry the same namespace/name.
+fn backoff_key(namespace: &str, name: &str) -> String {
+    format!("screen/{namespace}/{name}")
+}
+
 #[derive(Debug)]
 pub struct Failure {
     pub reason: &'static str,
@@ -271,7 +277,12 @@ async fn sync_one(
             .map(|_| "Updated"),
         PlanAction::NoOp => Ok("InSync"),
         PlanAction::Conflict(message) => {
-            publish(ctx, screen, EventType::Warning, "Conflict", message).await;
+            // A Conflict is sticky: it survives every resync until the server
+            // side changes, so re-publishing the event each time would flood the
+            // namespace's event stream.
+            if prior.and_then(|p| p.error.as_deref()) != Some(message.as_str()) {
+                publish(ctx, screen, EventType::Warning, "Conflict", message).await;
+            }
             return fail(status, reasons::CONFLICT, message.clone(), false);
         }
     };
@@ -297,9 +308,26 @@ async fn sync_one(
                 status: sync_success_status(status, changed, desired, &now),
             }
         }
+        // The server rejects a Create for an existing name with 400
+        // DUPLICATE_NAME. get_screen returned None a moment earlier, so the name
+        // was taken concurrently by something the operator does not own.
+        Err(ApiError::BadRequest(body))
+            if matches!(action, PlanAction::Create(_)) && body.code == "DUPLICATE_NAME" =>
+        {
+            let message = format!("screen '{}' already exists: {}", desired.name, body.message);
+            fail(status, reasons::CONFLICT, message, false)
+        }
         Err(e @ ApiError::BadRequest(_)) => {
             fail(status, reasons::INVALID_CONFIG, e.to_string(), false)
         }
+        // get_screen found the screen, so a 404 on the update means it was
+        // deleted between the two calls; retrying recreates it.
+        Err(ApiError::NotFound) => fail(
+            status,
+            reasons::API_ERROR,
+            "screen disappeared before the write could be applied".into(),
+            true,
+        ),
         // Unauthorized covers both 401 and 403 (see client::classify); it means the
         // credentials or grants are wrong, not that the server is momentarily
         // unavailable, so it must not be treated as transient.
@@ -350,7 +378,7 @@ async fn write_status(
 async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> {
     let namespace = screen.namespace().unwrap_or_default();
     let api: Api<Screen> = Api::namespaced(ctx.client.clone(), &namespace);
-    let key = format!("{namespace}/{}", screen.name_any());
+    let key = backoff_key(&namespace, &screen.name_any());
 
     let identity = match desired_identity(&screen, &ctx.cluster_name) {
         Ok(id) => id,
@@ -436,18 +464,23 @@ async fn apply(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> 
     Ok(Action::requeue(requeue))
 }
 
-async fn cleanup(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> {
-    let identity = match desired_identity(&screen, &ctx.cluster_name) {
+async fn delete_from_instances(screen: &Screen, ctx: &Context) -> Result<(), Error> {
+    // An empty instance store would look like "no instance holds this screen"
+    // and the finalizer would come off with the server screen still in place.
+    if !ctx.instances_ready() {
+        return Err(Error::Transient("instance store not ready".into()));
+    }
+    let identity = match desired_identity(screen, &ctx.cluster_name) {
         Ok(id) => id,
         // Nothing valid could ever have been written under an invalid identity.
-        Err(_) => return Ok(Action::await_change()),
+        Err(_) => return Ok(()),
     };
     let instances = sorted_by_namespace_name(
         matching_instances(&screen.spec.instance_selector, ctx.instances.state())
             .map_err(Error::Transient)?,
     );
     for instance in instances {
-        let client = build_client(&instance, &ctx)
+        let client = build_client(&instance, ctx)
             .await
             .map_err(|e| Error::Transient(e.to_string()))?;
         match client.get_screen(&identity.name).await {
@@ -464,8 +497,8 @@ async fn cleanup(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error
                     instance.name_any()
                 );
                 publish(
-                    &ctx,
-                    &screen,
+                    ctx,
+                    screen,
                     EventType::Normal,
                     "Deleted",
                     &format!(
@@ -480,7 +513,33 @@ async fn cleanup(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error
             Err(e) => return Err(Error::Transient(e.to_string())),
         }
     }
-    Ok(Action::await_change())
+    Ok(())
+}
+
+async fn cleanup(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> {
+    match delete_from_instances(&screen, &ctx).await {
+        Ok(()) => {
+            ctx.backoff.reset(&backoff_key(
+                &screen.namespace().unwrap_or_default(),
+                &screen.name_any(),
+            ));
+            Ok(Action::await_change())
+        }
+        // A CR stuck in Terminating is otherwise invisible: its status is not
+        // patched while the finalizer runs, so the reason only reaches the user
+        // as an event.
+        Err(e) => {
+            publish(
+                &ctx,
+                &screen,
+                EventType::Warning,
+                "DeleteFailed",
+                &e.to_string(),
+            )
+            .await;
+            Err(e)
+        }
+    }
 }
 
 pub async fn reconcile(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action, Error> {
@@ -498,11 +557,7 @@ pub async fn reconcile(screen: Arc<Screen>, ctx: Arc<Context>) -> Result<Action,
 }
 
 pub fn error_policy(screen: Arc<Screen>, err: &Error, ctx: Arc<Context>) -> Action {
-    let key = format!(
-        "{}/{}",
-        screen.namespace().unwrap_or_default(),
-        screen.name_any()
-    );
+    let key = backoff_key(&screen.namespace().unwrap_or_default(), &screen.name_any());
     warn!("screen {key} reconcile failed: {err}");
     Action::requeue(ctx.backoff.next(&key))
 }

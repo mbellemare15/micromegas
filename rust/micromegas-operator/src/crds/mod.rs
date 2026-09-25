@@ -8,5 +8,3 @@ pub use instance::{
 pub use screen::{
     ConfigFrom, ConfigMapKeyRef, Screen, ScreenInstanceStatus, ScreenSpec, ScreenStatus,
 };
-
-pub const GROUP: &str = "micromegas.info";

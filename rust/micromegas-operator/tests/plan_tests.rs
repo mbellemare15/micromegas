@@ -87,6 +87,19 @@ fn updates_folder_only() {
 }
 
 #[test]
+fn updates_config_and_folder_together() {
+    let d = desired();
+    let c = current(Some(&d.managed_by), json!({"cells": []}), "old/folder");
+    match plan(&d, Some(&c)) {
+        Action::Update(req) => {
+            assert_eq!(req.config, Some(d.config.clone()));
+            assert_eq!(req.folder_path.as_deref(), Some("team/prod"));
+        }
+        other => panic!("expected Update, got {other:?}"),
+    }
+}
+
+#[test]
 fn conflict_when_unmanaged() {
     let d = desired();
     let c = current(None, d.config.clone(), "team/prod");

@@ -6,7 +6,7 @@
 
 use clap::Parser;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+use k8s_openapi::api::core::v1::ConfigMap;
 use kube::runtime::controller::Controller;
 use kube::runtime::events::{Recorder, Reporter};
 use kube::runtime::reflector::ObjectRef;
@@ -19,7 +19,9 @@ use micromegas_operator::health;
 use micromegas_operator::reconcile::instance::matching_instances;
 use micromegas_operator::reconcile::{Backoff, Context, FIELD_MANAGER, instance, screen};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[clap(
@@ -62,7 +64,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let instances_api: Api<MicromegasInstance> = api(&client, ns);
     let screens_api: Api<Screen> = api(&client, ns);
-    let secrets_api: Api<Secret> = api(&client, ns);
     let configmaps_api: Api<ConfigMap> = api(&client, ns);
 
     let instance_ctrl = Controller::new(instances_api.clone(), watcher::Config::default());
@@ -70,9 +71,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let screen_ctrl = Controller::new(screens_api, watcher::Config::default());
     let screens_store = screen_ctrl.store();
 
+    let instances_ready = Arc::new(AtomicBool::new(false));
     let ctx = Arc::new(Context {
         client: client.clone(),
-        http: reqwest::Client::builder().build()?,
+        http: reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
+            .build()?,
         cluster_name: cli.cluster_name.clone(),
         instances: instances_store.clone(),
         tokens: Mutex::new(Default::default()),
@@ -84,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ),
         backoff: Backoff::default(),
+        instances_ready: instances_ready.clone(),
     });
 
     // Instance changes re-enqueue every Screen whose selector matches it.
@@ -127,27 +133,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .shutdown_on_signal();
 
-    // Secret changes re-enqueue the instances that reference them.
-    let instances_for_secrets = instances_store.clone();
-    let instance_ctrl = instance_ctrl
-        .watches(
-            secrets_api,
-            watcher::Config::default(),
-            move |secret: Secret| {
-                instances_for_secrets
-                    .state()
-                    .into_iter()
-                    .filter(|i| {
-                        i.namespace() == secret.namespace()
-                            && i.spec.auth.as_ref().is_some_and(|a| {
-                                a.oidc_client_credentials.secret_ref.name == secret.name_any()
-                            })
-                    })
-                    .map(|i| ObjectRef::from_obj(&*i))
-                    .collect::<Vec<_>>()
-            },
-        )
-        .shutdown_on_signal();
+    // No Secret watch: watching Secrets cluster-wide would cache every Secret
+    // body in the operator. The instance probe re-reads the referenced Secret
+    // every PROBE_INTERVAL and replaces the token cache when the credentials
+    // change, so a rotation takes effect within that interval.
+    let instance_ctrl = instance_ctrl.shutdown_on_signal();
 
     info!(
         "micromegas-operator starting, cluster_name={}",
@@ -171,10 +161,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         });
 
+    // The screen controller's cleanup path reads the instance store to find the
+    // servers holding a screen. Running it before the initial LIST lands would
+    // let a delete processed at startup drop the finalizer while the server
+    // screen is still there, so the screen controller and /readyz both wait for
+    // the instance reflector.
+    let gated_screen_loop = async {
+        if instances_store.wait_until_ready().await.is_err() {
+            return;
+        }
+        instances_ready.store(true, Ordering::SeqCst);
+        info!("instance store synced, starting screen controller");
+        screen_loop.await;
+    };
+
     tokio::select! {
         _ = instance_loop => {},
-        _ = screen_loop => {},
-        r = health::serve(cli.health_listen) => { r?; },
+        _ = gated_screen_loop => {},
+        r = health::serve(cli.health_listen, ctx.instances_ready.clone()) => { r?; },
     }
     Ok(())
 }
